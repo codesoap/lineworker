@@ -17,7 +17,13 @@ pool := lineworker.NewWorkerPool(runtime.NumCPU(), slowSprint)
 // Put in work:
 go func() {
 	for i := 0; i < 10; i++ {
-		pool.Process(i)
+		workAccepted := pool.Process(i)
+		if !workAccepted {
+			// Cannot happen in this example, because pool.Stop is not called
+			// outside this goroutine, but is handled for demonstration
+			// purposes.
+			return
+		}
 	}
 	pool.Stop()
 }()

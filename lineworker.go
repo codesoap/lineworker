@@ -8,7 +8,10 @@
 // workers.
 package lineworker
 
-import "fmt"
+import (
+	"fmt"
+	"sync/atomic"
+)
 
 // EOS is the error returned by Next when no more results are available.
 var EOS = fmt.Errorf("no more results available")
@@ -21,11 +24,12 @@ type WorkerPool[IN, OUT any] struct {
 	nextCalls    int
 	work         []chan IN
 	out          []chan workResult[OUT]
+	stopped      atomic.Bool
 }
 
 // NewWorkerPool creates a new worker pool with workerCount workers
 // waiting to process data of type IN to results of type OUT via f.
-func NewWorkerPool[IN, OUT any](workerCount int, f WorkFunc[IN, OUT]) WorkerPool[IN, OUT] {
+func NewWorkerPool[IN, OUT any](workerCount int, f WorkFunc[IN, OUT]) *WorkerPool[IN, OUT] {
 	pool := WorkerPool[IN, OUT]{
 		workFunc: f,
 		work:     make([]chan IN, workerCount),
@@ -46,14 +50,22 @@ func NewWorkerPool[IN, OUT any](workerCount int, f WorkFunc[IN, OUT]) WorkerPool
 			}
 		}()
 	}
-	return pool
+	return &pool
 }
 
 // Process queues a new input for processing. If all workers are
 // currently busy, Process will block.
-func (w *WorkerPool[IN, OUT]) Process(input IN) {
+//
+// Process will return true if the input has been accepted. If Stop has
+// been called previously, Process will discard the given input and
+// return false.
+func (w *WorkerPool[IN, OUT]) Process(input IN) bool {
+	if w.stopped.Load() {
+		return false
+	}
 	w.work[w.processCalls%len(w.work)] <- input
 	w.processCalls++
+	return true
 }
 
 // Next will return the next result with its error. If the next result
@@ -68,12 +80,32 @@ func (w *WorkerPool[IN, OUT]) Next() (OUT, error) {
 	return res.result, res.err
 }
 
-// Stop should be called after all calls to Process have been made.
-// It stops the workers from working and allows their resources to be
-// released.
+// Stop should be called after all calls to Process have been made. It
+// stops the workers from accepting new work and allows their resources
+// to be released after all results have been consumed via Next or
+// discarded with DiscardWork.
+//
+// Further calls to Stop after the first call will do nothing.
 func (w *WorkerPool[IN, OUT]) Stop() {
-	for _, work := range w.work {
-		close(work)
+	if !w.stopped.Swap(true) {
+		for _, work := range w.work {
+			close(work)
+		}
+	}
+}
+
+// DiscardWork recieves and discards all pending work results, so that
+// workers can quit after Stop has been called. It will block until all
+// workers have quit.
+//
+// DiscardWork must only be called after Stop has been called.
+func (w *WorkerPool[IN, OUT]) DiscardWork() {
+	for _, out := range w.out {
+		for {
+			if _, ok := <-out; !ok {
+				break
+			}
+		}
 	}
 }
 
