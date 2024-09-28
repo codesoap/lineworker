@@ -21,7 +21,6 @@ type WorkerPool[IN, OUT any] struct {
 	nextCalls    int
 	work         []chan IN
 	out          []chan workResult[OUT]
-	quit         []chan bool
 }
 
 // NewWorkerPool creates a new worker pool with workerCount workers
