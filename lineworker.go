@@ -10,7 +10,7 @@ package lineworker
 
 import (
 	"fmt"
-	"sync/atomic"
+	"sync"
 )
 
 // EOS is the error returned by Next when no more results are available.
@@ -19,12 +19,17 @@ var EOS = fmt.Errorf("no more results available")
 type WorkFunc[IN, OUT any] func(in IN) (OUT, error)
 
 type WorkerPool[IN, OUT any] struct {
-	workFunc     WorkFunc[IN, OUT]
+	workFunc WorkFunc[IN, OUT]
+
 	processCalls int
-	nextCalls    int
 	work         []chan IN
-	out          []chan workResult[OUT]
-	stopped      atomic.Bool
+	workLock     sync.Mutex
+
+	nextCalls int
+	out       []chan workResult[OUT]
+
+	stop     chan bool
+	stopLock sync.Mutex
 }
 
 // NewWorkerPool creates a new worker pool with workerCount workers
@@ -32,8 +37,13 @@ type WorkerPool[IN, OUT any] struct {
 func NewWorkerPool[IN, OUT any](workerCount int, f WorkFunc[IN, OUT]) *WorkerPool[IN, OUT] {
 	pool := WorkerPool[IN, OUT]{
 		workFunc: f,
+
 		work:     make([]chan IN, workerCount),
+		workLock: sync.Mutex{},
 		out:      make([]chan workResult[OUT], workerCount),
+
+		stop:     make(chan bool),
+		stopLock: sync.Mutex{},
 	}
 	for i := 0; i < workerCount; i++ {
 		pool.work[i] = make(chan IN)
@@ -60,11 +70,19 @@ func NewWorkerPool[IN, OUT any](workerCount int, f WorkFunc[IN, OUT]) *WorkerPoo
 // been called previously, Process will discard the given input and
 // return false.
 func (w *WorkerPool[IN, OUT]) Process(input IN) bool {
-	if w.stopped.Load() {
+	w.workLock.Lock()
+	defer w.workLock.Unlock()
+	select {
+	case <-w.stop:
+		return false
+	default:
+	}
+	select {
+	case w.work[w.processCalls%len(w.work)] <- input:
+		w.processCalls++
+	case <-w.stop:
 		return false
 	}
-	w.work[w.processCalls%len(w.work)] <- input
-	w.processCalls++
 	return true
 }
 
@@ -87,7 +105,14 @@ func (w *WorkerPool[IN, OUT]) Next() (OUT, error) {
 //
 // Further calls to Stop after the first call will do nothing.
 func (w *WorkerPool[IN, OUT]) Stop() {
-	if !w.stopped.Swap(true) {
+	w.stopLock.Lock()
+	defer w.stopLock.Unlock()
+	select {
+	case <-w.stop:
+	default:
+		close(w.stop)
+		w.workLock.Lock()
+		defer w.workLock.Unlock()
 		for _, work := range w.work {
 			close(work)
 		}
