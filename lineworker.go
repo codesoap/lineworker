@@ -119,7 +119,7 @@ func (w *WorkerPool[IN, OUT]) Stop() {
 	}
 }
 
-// DiscardWork recieves and discards all pending work results, so that
+// DiscardWork receives and discards all pending work results, so that
 // workers can quit after Stop has been called. It will block until all
 // workers have quit.
 //
